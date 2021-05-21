@@ -1,0 +1,332 @@
+---
+title: "Analysis 1- Heart Disease Prediction"
+author: "Li Ju (liju2@illinois.edu)"
+date: "Dec 10th 2020"
+output:
+  html_document: 
+    theme: default
+    toc: yes
+---
+
+```{r, setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, fig.align = 'center')
+```
+
+```{r, load-packages, include = FALSE}
+# load packages
+```
+
+```{r read-full-data, warning = FALSE, message = FALSE}
+# read full data
+hd = readr::read_csv("data/hd.csv")
+```
+
+***
+
+## Abstract
+
+This analysis focus on predict whether a patient has heart disease or not based on some basic health data. I will run 4 types of model: knn, decision tree, boosted and random forest with a set of parameters to buil models. Finally I will pick the best model based on the metric of test accuracy. 
+
+***
+
+## Introduction
+
+Heart diseases are very common nowadays, and thus more people are urged to test whether they have heart diseases or not. Modern medicine has developed a variety methods to do the heart diseases test, but many of them are "invasive", which means the test-taker need to take risks that the testing methods will do harm to his/her body, or at least cause some uncomfortable feelings. What my study is interested in is that building a machine learning model to predict whether a person have the heart diseases or not based on some very accessible features. What I mean by "accessible features" is that the features could be got from the test-takers by asking them some simple questions or doing some noninvasive medicine tests. Therefore, people could avoid those invasive tests and still know whether they have heart diseases or not by using my model to predict. The dataset we have is some demographic information and  physical coditions of people who went to take a test about heart disease, as well as their testing results. The test-takers from four locations: Cleveland, Hungary, Switzerland, and the VA Long Beach. 
+
+***
+
+## Methods
+
+Firstly, I split the whole data to train data and test data. Secondly, I did feature engineering, missing data cleaning and levels modification for train and test data. Thirdly, I split train data to estimation and validation data using corss-validation method. Fourthly, I built three kinds of models, knn(using different k values) model, decision tree(using different cp values), glm model using all variables(except `num`) to predict the `num` variable. In other words, I build a variety of model to predict a person have heart disease or not based on his/her demorgraphic information and health condition offered in the estimation data. Lastly, I used accuracy as the metric to pick the best model. 
+
+### Data
+
+Firstly, I imported relevant R packages. 
+
+```{r}
+#import packages
+library("tidyverse")
+library("caret")
+library("rpart")
+library("rpart.plot")
+```
+
+Secondly, I imported data and made train-test split. The original dataset `hd` has **920** rows and **15** variables, among which `age`, `sex`, `cp`, `trestbps`, `chol`, `fbs`, `restecg`, `thalach`, `exang`, `oldpeak`, `slope`, `ca`, `thal` are stored as numeric variables, and `num`, `location` are stored as categorical variables. We will use `num` as the response and the other variables as predictors. The complete variables explanation has been attached in appendix. 
+```{r}
+# read in the data
+hd = read_csv("data/hd.csv")
+skimr::skim(hd)
+# test train split the data
+set.seed(42)
+trn_idx = createDataPartition(hd$num, p = 0.80, list = TRUE)
+hd_trn = hd[trn_idx$Resample1, ]
+hd_tst= hd[- trn_idx$Resample1, ]
+```
+
+Thirdly, I made feature engineering. I converted all the categorical data from double type to factor type. Also, I notices some NA values in `chol` variable mismarked as **0** so I replaced those zeros with NA values. 
+
+```{r}
+# coerce character variables to factors
+hd_trn$num = factor(hd_trn$num)
+hd_trn$location = factor(hd_trn$location)
+hd_trn$cp = factor(hd_trn$cp)
+hd_trn$sex = factor(hd_trn$sex)
+hd_trn$fbs = factor(hd_trn$fbs)
+hd_trn$restecg = factor(hd_trn$restecg)
+hd_trn$exang = factor(hd_trn$exang)
+hd_trn[(hd_trn$chol == 0) & !is.na(hd_trn$chol) , ]$chol = NA
+
+hd_tst$num = factor(hd_tst$num)
+hd_tst$location = factor(hd_tst$location)
+hd_tst$cp = factor(hd_tst$cp)
+hd_tst$sex = factor(hd_tst$sex)
+hd_tst$fbs = factor(hd_tst$fbs)
+hd_tst$restecg = factor(hd_tst$restecg)
+hd_tst$exang = factor(hd_tst$exang)
+hd_tst[(hd_tst$chol == 0) & !is.na(hd_tst$chol) , ]$chol = NA
+```
+
+
+Fourthly, I checked the proportion of NA values in each column, and decided to drop all the columns with NA value proportion higher than 20%. Thus, I totally droped **4** variables: `chol`, `slope`, `ca`, `thal` in both datasets. . And then, I dropped all the rows with any NA values for train and test data. Then, I have found there were five levels for my response variable `num`: `v0`, `v1`, `v2`, `v3`, `v4`, `v0` means the person does not have any heart disease and the other four categories shows the person have heart diseases and how severe the heart diseases are. For my puropose of prediction, I only care the person has heart diseases or not so I will convert `num` to a binary variable: `v0` means a person does not have a heart diseases; `v1` means a person has heart disease.  After the data transformation, we have the response variable `num` and **10** predictors `age`, `sex`, `cp`, `trestbps`, `fbs`, `restecg`, `thalach`, `exang`, `oldpeak`, `location` with **608** rows in train data and **159** in test data. 
+
+```{r}
+# function to determine proportion of NAs in a vector
+na_prop = function(x) {
+  mean(is.na(x))
+}
+
+sapply(hd_trn, na_prop)
+sapply(hd_tst, na_prop)
+# create dataset without columns containing more than 20% NAs
+hd_trn = hd_trn[, !sapply(hd_trn, na_prop) > 0.20]
+hd_tst = hd_tst[, !sapply(hd_tst, na_prop) > 0.20]
+# drop rows with any NA values
+hd_trn = na.omit(hd_trn)
+hd_tst = na.omit(hd_tst)
+# convert `num` variable to the binary type
+# consider moving to binary response variable
+hd_trn$num = factor(dplyr::case_when(
+  hd_trn$num == "v0" ~ "v0",
+  hd_trn$num == "v1" ~ "v1",
+  hd_trn$num == "v2" ~ "v1",
+  hd_trn$num == "v3" ~ "v1",
+  hd_trn$num == "v4" ~ "v1"
+))
+
+hd_tst$num = factor(dplyr::case_when(
+  hd_tst$num == "v0" ~ "v0",
+  hd_tst$num == "v1" ~ "v1",
+  hd_tst$num == "v2" ~ "v1",
+  hd_tst$num == "v3" ~ "v1",
+  hd_tst$num == "v4" ~ "v1"
+))
+# take a look at transformed train and test data
+skimr::skim(hd_trn)
+skimr::skim(hd_tst)
+```
+
+
+### Modeling
+
+I will predict `num` variable based on all the other variables in dataset after data cleaning. Also, I will call 'train' function to unify the machine learning pipeline. I will apply 4 types of models: decsion tee, knn, boosted and random forest models. I will select the best model according to 2 metrics: the general accuracy and the proportion of false positive predictions.(People who actually have heart disease get the result of no heart disease based on my model)
+
+The first step is to create 5 folders.
+
+```{r}
+cv_5 = trainControl(method = "cv",number = 5)
+```
+
+
+tree model ml process:
+
+```{r}
+hd_tree_mod = train(form = num ~ .,
+                        data = hd_trn,
+                        method = "rpart",
+                        trControl = cv_5,
+                        tuneLength = 10
+)
+```
+
+tree model result:
+
+```{r}
+hd_tree_mod
+```
+
+the best tree model accuracy:
+
+```{r}
+tree_pred = predict(hd_tree_mod, hd_tst)
+mean(tree_pred == hd_tst$num)
+```
+
+the best tree model false negative proportion:
+
+```{r}
+levels(hd_trn$num)
+tree_tp = sum((tree_pred == 'v1') & (hd_tst$num == 'v1'))
+tree_fp = sum((tree_pred == 'v1') & (hd_tst$num == 'v0'))
+tree_tn = sum((tree_pred == 'v0') & (hd_tst$num == 'v0'))
+tree_fn = sum((tree_pred == 'v0') & (hd_tst$num == 'v1'))
+c(tree_tp, tree_fp, tree_tn, tree_fn)
+tree_fn/(tree_tp + tree_fp + tree_tn + tree_fn)
+```
+
+knn model ml process:
+
+```{r}
+hd_knn_mod = train(form = num ~ .,
+                    data = hd_trn,
+                    method = "knn",
+                    trControl = cv_5,
+                    tuneLength = 10
+)
+```
+
+knn model result:
+
+```{r}
+hd_knn_mod
+```
+
+the best knn model accuracy:
+```{r}
+knn_pred = predict(hd_knn_mod, hd_tst)
+mean(knn_pred == hd_tst$num)
+```
+
+the best knn model false negative proportion:
+
+```{r}
+knn_tp = sum((knn_pred == 'v1') & (hd_tst$num == 'v1'))
+knn_fp = sum((knn_pred == 'v1') & (hd_tst$num == 'v0'))
+knn_tn = sum((knn_pred == 'v0') & (hd_tst$num == 'v0'))
+knn_fn = sum((knn_pred == 'v0') & (hd_tst$num == 'v1'))
+c(knn_tp, knn_fp, knn_tn, knn_fn)
+knn_fn/(knn_tp + knn_fp + knn_tn + knn_fn)
+```
+
+boosted model ml process:
+
+```{r}
+hd_boosted_mod = train(form = num ~ .,
+                   data = hd_trn,
+                   method = "gbm",
+                   trControl = cv_5,
+                   tuneLength = 10,
+                   verbose = FALSE
+)
+```
+
+
+boosted model result:
+
+```{r}
+hd_boosted_mod
+```
+
+the best boosted model accuracy:
+
+```{r}
+bt_pred = predict(hd_boosted_mod, hd_tst)
+mean(bt_pred == hd_tst$num)
+```
+
+the best boosted model false positive proportion:
+
+```{r}
+bt_tp = sum((bt_pred == 'v1') & (hd_tst$num == 'v1'))
+bt_fp = sum((bt_pred == 'v1') & (hd_tst$num == 'v0'))
+bt_tn = sum((bt_pred == 'v0') & (hd_tst$num == 'v0'))
+bt_fn = sum((bt_pred == 'v0') & (hd_tst$num == 'v1'))
+c(bt_tp, bt_fp, bt_tn, bt_fn)
+bt_fn/(bt_tp + bt_fp + bt_tn + bt_fn)
+```
+
+random forest ml process:
+
+```{r}
+hd_rf_mod = train(form = num ~ .,
+                       data = hd_trn,
+                       method = "rf",
+                       trControl = cv_5,
+                       tuneLength = 10,
+                       verbose = FALSE
+)
+```
+
+random forest model result:
+
+```{r}
+hd_rf_mod
+```
+
+the best random forest model accuracy:
+
+```{r}
+rf_pred = predict(hd_rf_mod, hd_tst)
+mean(rf_pred == hd_tst$num)
+```
+
+```{r}
+rf_tp = sum((rf_pred == 'v1') & (hd_tst$num == 'v1'))
+rf_fp = sum((rf_pred == 'v1') & (hd_tst$num == 'v0'))
+rf_tn = sum((rf_pred == 'v0') & (hd_tst$num == 'v0'))
+rf_fn = sum((rf_pred == 'v0') & (hd_tst$num == 'v1'))
+c(rf_tp, rf_fp, rf_tn, rf_fn)
+rf_fn/(rf_tp + rf_fp + rf_tn + rf_fn)
+```
+
+***
+
+## Results
+
+I will pick the 'best' boosted model among the four 'best' models. In other words, the boosted model predicting num based on the other 10 variables with the parameter shrinkage = 0.1 and n.minobsinnode = 10 is the best model. This model not only has the highest test accuaracy bu also has the lowest false negative proportion. 
+
+***
+
+## Discussion
+Though the best model has very high accuracy, which means it could predict whether a patient has heart disease or not pretty well, it is hard to explain the model, which means how specific predictors affect the response`num`. Relatively, decision tree model and knn model are easier to explain since they are built in a more simple way, which also means they may not perform as well as boosted model in prediction part. 
+
+***
+
+## Changelog
+Firstly, I changed the pipeline of making machine learning models. Instead of doing the steps manually, I used `train` function to help me simplify and unify the process of training **4** machine learning models. 
+Secondly, I change the metric to pick the best model. Instead of simply using the test-accuracy as the metric, I also paid attention to the proportion of false negative results given that it is even more dangerous if a person having heart disease was recognize as being healthy. 
+
+
+
+***
+
+## Appendix
+
+Place potential additional information here.
+
+Varaibles Explanation:
+  - `age` - age in years
+  - `sex` - sex (1 = male; 0 = female)
+  - `cp` -  chest pain type
+  
+  - `trestbps` - resting blood pressure (in mm Hg on admission to the hospital)
+  - `chol` - serum cholestoral in mg/dl
+  - `fbs` - (fasting blood sugar > 120 mg/dl) (1 = true; 0 = false)
+  
+  - `restecg` - resting electrocardiographic results
+  
+  - `thalach` - maximum heart rate achieved
+  - `exang` - exercise induced angina (1 = yes; 0 = no)
+  - `oldpeak` - ST depression induced by exercise relative to rest
+  - `slope` - the slope of the peak exercise ST segment
+  
+  - `ca` - number of major vessels (0-3) colored by flourosopy
+  
+  - `thal` -  3 = normal; 6 = fixed defect; 7 = reversable defect
+  
+  - `num` - diagnosis of heart disease (angiographic disease status)
+      - v0: 0 major vessels with greater than 50% diameter narrowing. No presence of heart disease.
+      - v1: 1 major vessels with greater than 50% diameter narrowing.
+      - v2: 2 major vessels with greater than 50% diameter narrowing.
+      - v3: 3 major vessels with greater than 50% diameter narrowing.
+      - v4: 4 major vessels with greater than 50% diameter narrowing.
+    
